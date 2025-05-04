@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Carte logements – Mobile</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-search@3.0.5/dist/leaflet-search.min.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-search@3.0.5/dist/leaflet-search.min.js"></script>
+  <style>
+    html,body{height:100%;margin:0}
+    #map{height:75vh}
+    @media(min-width:640px){#map{height:70vh}}
+    th{cursor:pointer}
+  </style>
+</head>
+<body class="bg-gray-100 font-sans h-full flex flex-col">
+  <!-- Header -->
+  <header class="flex items-center justify-between p-4 bg-white shadow">
+    <button id="btnMenu" class="sm:hidden inline-flex items-center justify-center w-10 h-10 rounded-full bg-gray-200">
+      <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+      </svg>
+    </button>
+    <h1 class="text-lg font-semibold text-center flex-1">Carte des défauts</h1>
+  </header>
+
+  <!-- Drawer -->
+  <aside id="drawer" class="fixed inset-y-0 left-0 w-64 bg-white shadow-lg p-4 transform -translate-x-full sm:relative sm:translate-x-0 sm:w-64 sm:flex-none transition-transform z-40">
+    <h2 class="text-xl font-semibold mb-2">Filtres</h2>
+    <div id="filters" class="space-y-2 overflow-y-auto max-h-[70vh]"></div>
+  </aside>
+
+  <!-- Main -->
+  <main class="flex-1 overflow-auto p-4 sm:ml-64">
+    <div id="map" class="rounded-xl shadow"></div>
+    <div class="bg-white rounded-xl shadow mt-4 overflow-x-auto">
+      <h2 class="text-xl font-semibold p-4">Logements (<span id="count"></span>)</h2>
+      <table id="table" class="min-w-full text-sm">
+        <thead>
+          <tr class="bg-gray-200">
+            <th data-key="address" class="px-3 py-2 text-left">Adresse ▲▼</th>
+            <th data-key="nb" class="px-3 py-2 text-left"># Défauts ▲▼</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </main>
+
+<script>
+  // drawer toggle
+  document.getElementById('btnMenu').addEventListener('click', () =>
+    document.getElementById('drawer').classList.toggle('-translate-x-full')
+  );
+
+  // Fetch data then init map
+  fetch('pavillons.geojson')
+    .then(r => r.json())
+    .then(init);
+
+  function init(geojsonData) {
+    const categoryLabels = Object.fromEntries(geojsonData.features.flatMap(f=>f.properties.defects).map(c=>[c,c.replace(/_/g,' ')]));
+
+    const CRIT = ["probleme_vmc","compteur_electrique_dorigine","fils_denudes_et_absences_de_protection_electrique"];
+    const col = {high:'#b91c1c',med:'#d97706',low:'#15803d',none:'#2563eb'};
+    const fill = {high:'#f87171',med:'#fcd34d',low:'#4ade80',none:'#60a5fa'};
+
+    function sev(d) {
+      const c = d.defects.filter(x=>CRIT.includes(x)).length;
+      const t = d.defects.length;
+      return c>0||t>3?'high':t>=2?'med':t==1?'low':'none';
+    }
+
+    const map = L.map('map').setView([48.7748,2.0573],17);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
+
+    const markerLayer = L.geoJSON(geojsonData,{
+      pointToLayer:(f,latlng)=>L.circleMarker(latlng,{radius:8,color:col[sev(f.properties)],fillColor:fill[sev(f.properties)],fillOpacity:0.85}),
+      onEachFeature:(f,l)=>{
+        const list = f.properties.defects.length ? '<ul>'+f.properties.defects.map(d=>'<li>'+categoryLabels[d]+'</li>').join('')+'</ul>' : 'Aucun défaut';
+        l.bindPopup('<strong>'+f.properties.address+'</strong><br>'+list);
+      }
+    }).addTo(map);
+
+    new L.Control.Search({layer:markerLayer,propertyName:'address',zoom:19,marker:false,textPlaceholder:'Rechercher…'}).addTo(map);
+
+    // filters
+    const allCats=[...new Set(geojsonData.features.flatMap(f=>f.properties.defects))].sort();
+    const filtersDiv=document.getElementById('filters');
+    allCats.forEach(c=>{filtersDiv.insertAdjacentHTML('beforeend',`<label class="flex items-center gap-2"><input type="checkbox" id="chk-${c}" class="h-4 w-4"/>${categoryLabels[c]}</label>`)});
+    document.querySelectorAll('#filters input').forEach(i=>i.addEventListener('change',apply));
+
+    const tbody=document.getElementById('tbody'),countEl=document.getElementById('count');
+    let sort={k:'address',asc:true};
+    document.querySelectorAll('th[data-key]').forEach(th=>th.addEventListener('click',()=>{const k=th.dataset.key;sort.asc=sort.k===k?!sort.asc:true;sort.k=k;apply();}));
+
+    function apply() {
+      const active=allCats.filter(c=>document.getElementById('chk-'+c).checked);
+      markerLayer.eachLayer(l=>{const d=l.feature.properties.defects,show=!active.length||d.some(x=>active.includes(x));show?l.addTo(map):map.removeLayer(l);});
+      const rows=[];
+      markerLayer.eachLayer(l=>rows.push(l.feature.properties));
+      rows.sort((a,b)=>{const dir=sort.asc?1:-1;return sort.k==='address'?a.address.localeCompare(b.address,'fr')*dir:(a.defects.length-b.defects.length)*dir;});
+      tbody.innerHTML=rows.map(r=>`<tr><td class="px-3 py-1">${r.address}</td><td class="px-3 py-1">${r.defects.length}</td></tr>`).join('');
+      countEl.textContent=rows.length;
+    }
+    apply();
+  }
+</script>
+</body>
+</html>
